@@ -4,11 +4,13 @@ import dash_daq as daq
 from dash.dependencies import Input, Output, State
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 import pandas as pd
 import joblib
 from functools import lru_cache
 import numpy as np
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from scipy.stats import gaussian_kde
 import base64
 import io
 import json
@@ -29,7 +31,7 @@ labels = ['0% to <10%', '10% to <20%', '20% to <30%', '30% to <40%', '40% to <50
 pipeline = joblib.load("model.pkl")
 
 app = Dash(__name__, suppress_callback_exceptions=True)
-app.title = 'Titanic Survival Analysis'
+app.title = 'Titanic Analysis'
 
 
 # -------------------------
@@ -209,6 +211,287 @@ def style_layout(title, bgcolor='rgba(255,242,204,100)'):
     )
 
 
+def create_age_density_plot(df, view_mode='combined'):
+    """
+    Create density plots for passenger ages by gender.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with 'Age' and 'Gender' columns
+    view_mode : str
+        'combined' for overlaid plots, 'separated' for side-by-side subplots
+    
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        Density plot figure
+    """
+    # Filter out missing ages
+    df_age = df[df['Age'].notna()].copy()
+    
+    if df_age.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No age data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16)
+        )
+        fig.update_layout(**style_layout('Distribution of Passenger Ages'))
+        return fig
+    
+    # Separate by gender
+    male_data = df_age[df_age['Gender'] == 'Male']['Age'].values
+    female_data = df_age[df_age['Gender'] == 'Female']['Age'].values
+    all_data = df_age['Age'].values
+    
+    # Count passengers with known age
+    n_male = len(male_data)
+    n_female = len(female_data)
+    n_all = len(all_data)
+    
+    # Create age range for plotting
+    age_min = max(0, df_age['Age'].min() - 5)
+    age_max = df_age['Age'].max() + 5
+    age_range = np.linspace(age_min, age_max, 500)
+    
+    # Colors matching the reference images
+    color_male = 'rgb(100, 120, 150)'  # Blue-grey
+    color_female = 'rgb(200, 120, 80)'  # Orange-brown
+    color_all = 'rgba(200, 200, 200, 0.5)'  # Light gray
+    
+    if view_mode == 'separated':
+        # Create subplots side by side
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Male passengers', 'Female passengers'),
+            shared_yaxes=True,
+            shared_xaxes=True
+        )
+        
+        # Calculate densities for male subplot
+        if n_male > 1:  # Need at least 2 points for KDE
+            kde_male = gaussian_kde(male_data)
+            density_male = kde_male(age_range)
+            # Scale so area equals number of passengers
+            # The area under a KDE curve is approximately 1, so we multiply by n_male
+            scaled_density_male = density_male * n_male
+        elif n_male == 1:
+            # Single point - create a simple spike
+            scaled_density_male = np.zeros_like(age_range)
+            idx = np.argmin(np.abs(age_range - male_data[0]))
+            scaled_density_male[idx] = n_male * 10  # Scale for visibility
+        else:
+            scaled_density_male = np.zeros_like(age_range)
+        
+        # Calculate densities for female subplot
+        if n_female > 1:  # Need at least 2 points for KDE
+            kde_female = gaussian_kde(female_data)
+            density_female = kde_female(age_range)
+            # Scale so area equals number of passengers
+            scaled_density_female = density_female * n_female
+        elif n_female == 1:
+            # Single point - create a simple spike
+            scaled_density_female = np.zeros_like(age_range)
+            idx = np.argmin(np.abs(age_range - female_data[0]))
+            scaled_density_female[idx] = n_female * 10  # Scale for visibility
+        else:
+            scaled_density_female = np.zeros_like(age_range)
+        
+        # Add all passengers background (gray) to both subplots
+        if n_all > 1:
+            kde_all = gaussian_kde(all_data)
+            density_all = kde_all(age_range)
+            scaled_density_all = density_all * n_all
+            
+            # Add to male subplot
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_all,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='all passengers',
+                    line=dict(color=color_all, width=1),
+                    showlegend=True,
+                    legendgroup='all'
+                ),
+                row=1, col=1
+            )
+            
+            # Add to female subplot
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_all,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='all passengers',
+                    line=dict(color=color_all, width=1),
+                    showlegend=False,  # Don't show again
+                    legendgroup='all'
+                ),
+                row=1, col=2
+            )
+        
+        # Add male distribution
+        if n_male > 0:
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_male,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='males',
+                    line=dict(color=color_male, width=2),
+                    showlegend=True,
+                    legendgroup='male'
+                ),
+                row=1, col=1
+            )
+        
+        # Add female distribution
+        if n_female > 0:
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_female,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='females',
+                    line=dict(color=color_female, width=2),
+                    showlegend=True,
+                    legendgroup='female'
+                ),
+                row=1, col=2
+            )
+        
+        # Update layout
+        fig.update_xaxes(
+            title_text="passenger age (years)", 
+            row=1, col=1,
+            showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)'
+        )
+        fig.update_xaxes(
+            title_text="passenger age (years)", 
+            row=1, col=2,
+            showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)'
+        )
+        fig.update_yaxes(
+            title_text="scaled density", 
+            row=1, col=1,
+            showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)'
+        )
+        fig.update_yaxes(
+            row=1, col=2,
+            showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)'
+        )
+        
+        fig.update_layout(
+            title=f'Age Distribution by Gender (n={n_all})',
+            font_family='Tahoma',
+            plot_bgcolor='white',
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=-0.25,
+                xanchor='center',
+                x=0.5
+            ),
+            height=500,
+            margin=dict(b=80)  # Add bottom margin to accommodate legend and x-axis label
+        )
+        
+    else:  # combined view
+        fig = go.Figure()
+        
+        # Add male distribution
+        if n_male > 1:  # Need at least 2 points for KDE
+            kde_male = gaussian_kde(male_data)
+            density_male = kde_male(age_range)
+            # Scale so area equals number of passengers
+            scaled_density_male = density_male * n_male
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_male,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='male',
+                    line=dict(color=color_male, width=2),
+                    fillcolor=color_male
+                )
+            )
+        elif n_male == 1:
+            # Single point - create a simple spike
+            scaled_density_male = np.zeros_like(age_range)
+            idx = np.argmin(np.abs(age_range - male_data[0]))
+            scaled_density_male[idx] = n_male * 10  # Scale for visibility
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_male,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='male',
+                    line=dict(color=color_male, width=2),
+                    fillcolor=color_male
+                )
+            )
+        
+        # Add female distribution (stacked/overlaid)
+        if n_female > 1:  # Need at least 2 points for KDE
+            kde_female = gaussian_kde(female_data)
+            density_female = kde_female(age_range)
+            # Scale so area equals number of passengers
+            scaled_density_female = density_female * n_female
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_female,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='female',
+                    line=dict(color=color_female, width=2),
+                    fillcolor=color_female
+                )
+            )
+        elif n_female == 1:
+            # Single point - create a simple spike
+            scaled_density_female = np.zeros_like(age_range)
+            idx = np.argmin(np.abs(age_range - female_data[0]))
+            scaled_density_female[idx] = n_female * 10  # Scale for visibility
+            fig.add_trace(
+                go.Scatter(
+                    x=age_range, y=scaled_density_female,
+                    fill='tozeroy',
+                    mode='lines',
+                    name='female',
+                    line=dict(color=color_female, width=2),
+                    fillcolor=color_female
+                )
+            )
+        
+        # Update layout
+        fig.update_layout(
+            title=f'Age Distribution by Gender (n={n_all})',
+            xaxis_title='age (years)',
+            yaxis_title='scaled density',
+            font_family='Tahoma',
+            plot_bgcolor='white',
+            showlegend=True,
+            legend=dict(
+                title_text='gender',
+                yanchor='top',
+                y=0.99,
+                xanchor='right',
+                x=0.99
+            ),
+            height=500,
+            xaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)'),
+            yaxis=dict(showgrid=True, gridwidth=1, gridcolor='rgba(200, 200, 200, 0.3)')
+        )
+    
+    return fig
+
+
 # -------------------------
 # Division 1: Header, Sample Record & Controls
 # -------------------------
@@ -217,7 +500,7 @@ def create_container1():
     return html.Div([
         # Left side: Header, description, and image
         html.Div([
-            html.H1("Titanic Survival Analysis"),
+            html.H1("Titanic Analysis"),
             html.P("Explore the Titanic dataset, analyze passenger survival, and predict survival for new passengers."),
             html.Img(src="assets/titanic-sinking.png", className="header-image")
         ], className="container1-left"),
@@ -267,7 +550,16 @@ def create_container2():
                 options=create_dropdown_options(test['Gender']),
                 value=create_dropdown_value(test['Gender'])
             ),
-            html.Button(id='update-button', children="Update", n_clicks=0, className="update-button")
+            html.Label("Age Distribution View", className='dropdown-labels'),
+            dcc.RadioItems(
+                id='age-view-toggle',
+                options=[
+                    {'label': 'Combined', 'value': 'combined'},
+                    {'label': 'Separated', 'value': 'separated'}
+                ],
+                value='combined',
+                className='radio-items'
+            )
         ], id="filters", className="filters"),
 
         # Graphs section
@@ -441,6 +733,7 @@ def create_container6():
 app.layout = html.Div(
     id="container",
     children=[
+        dcc.Store(id='app-load-trigger', data={'loaded': True}),
         create_container1(),
         create_container2(),
         create_container3(),
@@ -463,29 +756,27 @@ app.layout = html.Div(
      Output('table', 'figure'),
      Output('class-dropdown', 'value'),
      Output('gender-dropdown', 'value')],
-    [Input('update-button', 'n_clicks'),
+    [Input('class-dropdown', 'value'),
+     Input('gender-dropdown', 'value'),
      Input('target-toggle', 'on'),
      Input('sort-toggle', 'on'),
-     Input('n-slider', 'value')],
-    [State('class-dropdown', 'value'),
-     State('gender-dropdown', 'value')]
+     Input('n-slider', 'value'),
+     Input('age-view-toggle', 'value')]
 )
-def update_output(update_clicks, target, ascending, n,
-                  class_value, gender_value):
+def update_output(class_value, gender_value, target, ascending, n, age_view_mode):
     """
     Update all graphs and the sample records table based on filter selections.
     """
     dff = test.copy()
 
-    # Apply filters only if the 'Update' button has been clicked at least once
-    if update_clicks > 0:
-        # Filter by 'Passenger Class' if not empty
-        if class_value:
-            dff = dff[dff['Class'].isin(class_value)]
+    # Apply filters immediately
+    # Filter by 'Passenger Class' if not empty
+    if class_value:
+        dff = dff[dff['Class'].isin(class_value)]
 
-        # Filter by 'Gender' if not empty
-        if gender_value:
-            dff = dff[dff['Gender'].isin(gender_value)]
+    # Filter by 'Gender' if not empty
+    if gender_value:
+        dff = dff[dff['Gender'].isin(gender_value)]
 
     # If no data remains after filtering, display empty figures with a warning
     if dff.empty:
@@ -493,9 +784,8 @@ def update_output(update_clicks, target, ascending, n,
         empty_fig.update_layout(title_text="No data available for the selected filters")
         return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, class_value, gender_value
 
-    # --- Age Histogram ---
-    age_histogram = px.histogram(dff, x='Age')
-    age_histogram.update_layout(**style_layout(f'Distribution of Passenger Ages (n={len(dff)})'))
+    # --- Age Density Plot ---
+    age_histogram = create_age_density_plot(dff, view_mode=age_view_mode)
 
     # --- Class Barplot ---
     count_1st, survived_1st = status_in_class(dff, 'First', 'Yes')
@@ -647,9 +937,9 @@ def predict_survival(n_clicks, pclass, gender, age, sibsp, parch, fare, embark):
 # -------------------------
 @app.callback(
     Output('feature-importance-plot', 'figure'),
-    Input('update-button', 'n_clicks')
+    Input('app-load-trigger', 'data')
 )
-def update_feature_importance(n_clicks):
+def update_feature_importance(_):
     """Update feature importance plot."""
     feature_importance = get_feature_importance(pipeline.named_steps['model'])
     
@@ -701,9 +991,9 @@ def update_feature_importance(n_clicks):
 # -------------------------
 @app.callback(
     Output('passenger-stories', 'children'),
-    Input('update-button', 'n_clicks')
+    Input('app-load-trigger', 'data')
 )
-def update_passenger_stories(n_clicks):
+def update_passenger_stories(_):
     """Update passenger stories section."""
     stories = get_passenger_stories()
     
@@ -727,9 +1017,9 @@ def update_passenger_stories(n_clicks):
 # -------------------------
 @app.callback(
     Output('titanic-timeline', 'children'),
-    Input('update-button', 'n_clicks')
+    Input('app-load-trigger', 'data')
 )
-def update_titanic_timeline(n_clicks):
+def update_titanic_timeline(_):
     """Update Titanic timeline section."""
     timeline_events = [
         {
@@ -847,10 +1137,10 @@ def update_titanic_timeline(n_clicks):
 @app.callback(
     [Output('prediction-history-table', 'figure'),
      Output('prediction-stats', 'children')],
-    [Input('update-button', 'n_clicks'),
+    [Input('app-load-trigger', 'data'),
      Input('predict-button', 'n_clicks')]
 )
-def update_prediction_history(update_clicks, predict_clicks):
+def update_prediction_history(_, predict_clicks):
     """Update prediction history table and statistics."""
     try:
         predictions_df = pd.read_csv('user_predictions.csv')
